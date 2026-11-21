@@ -2,8 +2,8 @@ idt3map
 =======
 
 Fork of `NetRadiant-custom <https://github.com/Garux/netradiant-custom>`_
-which builds only its ``q3map2`` map compiler, with a standalone CMake build
-for Linux, macOS and Windows (MinGW-w64 GCC).
+which builds only its ``q3map2`` map compiler, as ``idt3tcmap``, with a
+standalone CMake build for Linux, macOS and Windows (MinGW-w64 GCC).
 
 Layout
 ------
@@ -32,6 +32,10 @@ libxml2, glib, assimp) installed on the system:
 
    cmake -S . -B build -G Ninja
    cmake --build build
+
+The executable ends up as ``build/idt3tcmap`` (``idt3tcmap.exe`` on
+Windows). Only the file name differs from upstream; the program itself
+still calls itself q3map2 in its output.
 
 Options:
 

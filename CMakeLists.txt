@@ -250,6 +250,9 @@ file(WRITE "${Q3MAP2_CONFIG_HEADER}.in"
 configure_file("${Q3MAP2_CONFIG_HEADER}.in" "${Q3MAP2_CONFIG_HEADER}" @ONLY)
 
 add_executable(q3map2 ${q3map2_sources})
+# This fork's executable is called idt3tcmap; the target keeps upstream's
+# name, so the rest of the build reads like upstream's Makefile
+set_target_properties(q3map2 PROPERTIES OUTPUT_NAME idt3tcmap)
 target_include_directories(q3map2 PRIVATE
   "${NR}/tools/quake3/common" "${NR}/libs" "${NR}/include")
 target_compile_options(q3map2 PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:-include;${Q3MAP2_CONFIG_HEADER}>")
