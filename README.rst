@@ -58,6 +58,26 @@ relative (``-ffile-prefix-map``) and Windows executables contain no link
 timestamp. Set ``SOURCE_DATE_EPOCH`` to also fix ``__DATE__`` /
 ``__TIME__``.
 
+CI and releases
+---------------
+
+The ``CI`` GitHub workflow (``.github/workflows/ci.yml``) builds
+``idt3tcmap`` natively for ``linux-x86_64``, ``macos-x86_64``,
+``macos-arm64`` and ``windows-x86_64`` (MSYS2 UCRT64), with the vendored
+assimp. Each build is bundled with the shared libraries it needs which are
+not part of the operating system (``.github/scripts/bundle.sh``), so it
+runs without installing any dependencies, and is smoke tested by compiling
+a regression map with models (``.github/scripts/smoke-test.sh``). The
+Linux binaries need glibc 2.39 or later, the macOS ones the macOS version
+of the runner.
+
+Running the workflow manually (*Run workflow* in the GitHub Actions tab)
+with ``release`` checked creates a GitHub release with the archives of all
+platforms, once all of them built and passed their tests. Its tag is the
+version of the build, ``<q3map2 version>-<commit date>-<commit hash>``.
+The release is uploaded as a draft and only published when complete; it
+fails if the release or tag exists already.
+
 Merging from upstream
 ---------------------
 

@@ -1,0 +1,253 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Create a GitHub release with the binaries of all platforms
+        type: boolean
+        default: false
+
+# Release runs get their own concurrency group and are never cancelled, so
+# that a push to the same branch cannot abort them halfway through releasing
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.release && '-release' || '' }}
+  cancel-in-progress: ${{ !inputs.release }}
+
+jobs:
+  # Derives the version of this build once, for all platforms and the
+  # release: upstream's q3map2 version from the Makefile, plus the date and
+  # hash of the built commit, e.g. 2.5.17n-20261121-44d71c8
+  version:
+    name: version
+    runs-on: ubuntu-24.04
+    outputs:
+      suffix: ${{ steps.version.outputs.suffix }}
+      version: ${{ steps.version.outputs.version }}
+      source_date_epoch: ${{ steps.version.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Determine version
+        id: version
+        run: |
+          base="$(sed -n 's/^Q3MAP_VERSION[[:space:]]*=[[:space:]]*//p' Makefile)"
+          if [[ -z "${base}" ]]; then
+            echo "::error::Q3MAP_VERSION not found in Makefile"
+            exit 1
+          fi
+          suffix="$(git log -1 --format=%cd --date=format:%Y%m%d)-$(git rev-parse --short=7 HEAD)"
+          {
+            echo "suffix=${suffix}"
+            echo "version=${base}-${suffix}"
+            # Fixed __DATE__ / __TIME__ for reproducible builds
+            echo "source_date_epoch=$(git log -1 --format=%ct)"
+          } | tee -a "${GITHUB_OUTPUT}"
+
+  build:
+    name: ${{ matrix.platform }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+            shell: bash
+          - platform: macos-x86_64
+            os: macos-15-intel
+            shell: bash
+          - platform: macos-arm64
+            os: macos-15
+            shell: bash
+          - platform: windows-x86_64
+            os: windows-2025
+            shell: msys2 {0}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.version.outputs.source_date_epoch }}
+      # Directory, archive and artifact name of this platform's binaries
+      DIST_NAME: idt3tcmap-${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The vendored assimp is used on all platforms (see the configure
+      # step), so assimp is not among the dependencies
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -y install ninja-build g++-14 patchelf \
+            libglib2.0-dev libxml2-dev libpng-dev libjpeg-dev zlib1g-dev
+          echo "CC=gcc-14" >> "${GITHUB_ENV}"
+          echo "CXX=g++-14" >> "${GITHUB_ENV}"
+
+      # libxml2 and zlib come with the macOS SDK
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja glib libpng jpeg-turbo dylibbundler
+          # Also jpeg-turbo's own prefix, in case it is keg-only (not linked)
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix):$(brew --prefix jpeg-turbo)" >> "${GITHUB_ENV}"
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            zip
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-libpng
+            mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-zlib
+
+      # The vendored assimp is linked statically everywhere: it is the fork
+      # upstream builds against, and it is one library less to bundle
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQ3MAP2_VENDORED_ASSIMP=ON \
+            -DQ3MAP2_VERSION_SUFFIX="${{ needs.version.outputs.suffix }}"
+
+      - name: Build
+        run: cmake --build build --verbose
+
+      # The executable plus the shared libraries it needs, see the script
+      - name: Bundle
+        run: |
+          exe=build/idt3tcmap
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            exe=build/idt3tcmap.exe
+          fi
+          .github/scripts/bundle.sh "${exe}" "dist/${DIST_NAME}"
+          cp GPL LICENSE README.rst "dist/${DIST_NAME}/"
+
+      # Runs the bundled executable, not the one in build/
+      - name: Smoke test
+        run: |
+          exe="dist/${DIST_NAME}/idt3tcmap"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            exe="${exe}.exe"
+          fi
+          .github/scripts/smoke-test.sh "${exe}"
+
+      # tar keeps the executable bit on Linux and macOS, zip is what
+      # Windows users expect
+      - name: Archive
+        id: archive
+        run: |
+          cd dist
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            archive="${DIST_NAME}.zip"
+            zip -r -X "${archive}" "${DIST_NAME}"
+          else
+            archive="${DIST_NAME}.tar.gz"
+            tar -czf "${archive}" "${DIST_NAME}"
+          fi
+          echo "path=dist/${archive}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.DIST_NAME }}
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+
+  # Creates a GitHub release with the binaries of all platforms, only on
+  # manually triggered runs with 'release' set, and only once every
+  # platform built and passed its smoke test. The release is tagged with
+  # the version of the build (see the 'version' job) at the built commit.
+  release:
+    name: release
+    needs: [version, build]
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.version.outputs.version }}
+
+    steps:
+      # One artifact directory per platform, so a binary can't stand in
+      # for one of another platform
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: idt3tcmap-*
+          path: dist
+
+      # Every expected archive is named explicitly; nothing is released if
+      # one is missing or if there are unexpected files
+      - name: Check binaries
+        run: |
+          expected=(
+            dist/idt3tcmap-linux-x86_64/idt3tcmap-linux-x86_64.tar.gz
+            dist/idt3tcmap-macos-x86_64/idt3tcmap-macos-x86_64.tar.gz
+            dist/idt3tcmap-macos-arm64/idt3tcmap-macos-arm64.tar.gz
+            dist/idt3tcmap-windows-x86_64/idt3tcmap-windows-x86_64.zip
+          )
+          for f in "${expected[@]}"; do
+            if [[ ! -f "${f}" ]]; then
+              echo "::error::Missing binaries: ${f}"
+              exit 1
+            fi
+          done
+          unexpected="$(find dist -type f | sort | grep -vxF -f <(printf '%s\n' "${expected[@]}") || true)"
+          if [[ -n "${unexpected}" ]]; then
+            echo "::error::Unexpected files: ${unexpected//$'\n'/, }"
+            exit 1
+          fi
+          printf '%s\n' "${expected[@]}" > release-files.txt
+          (cd dist && find . -type f | sort | xargs sha256sum) | sed 's| \./.*/| |' > SHA256SUMS
+          cat SHA256SUMS
+
+      # Refuse to touch an existing release or tag, every release needs a
+      # new commit (and thus version)
+      - name: Check tag
+        run: |
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "::error::Release ${TAG} exists already"
+            exit 1
+          fi
+          if gh api "repos/${GH_REPO}/git/refs/tags/${TAG}" > /dev/null 2>&1; then
+            echo "::error::Tag ${TAG} exists already"
+            exit 1
+          fi
+
+      # Uploads everything to a draft release first and only publishes it
+      # (which creates the tag) once all files are uploaded, so a release
+      # is either complete or not published at all
+      - name: Create release
+        id: create
+        run: |
+          mapfile -t files < release-files.txt
+          gh release create "${TAG}" --draft \
+            --target "${GITHUB_SHA}" \
+            --title "idt3tcmap ${TAG}" \
+            --notes "idt3tcmap (q3map2) ${TAG}, built from ${GITHUB_SHA}." \
+            "${files[@]}" SHA256SUMS
+          gh release edit "${TAG}" --draft=false
+
+      # Removes the draft release (never a published one) if creating or
+      # publishing it failed halfway
+      - name: Remove incomplete release
+        if: failure() && steps.create.outcome == 'failure'
+        run: |
+          if [[ "$(gh release view "${TAG}" --json isDraft --jq .isDraft 2> /dev/null)" == "true" ]]; then
+            gh release delete "${TAG}" --yes
+          fi
