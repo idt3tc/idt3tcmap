@@ -7,3 +7,6 @@
 /.cache/
 /.clang*
 /compile_commands.json
+
+# idt3map: CMake build trees
+/build/
