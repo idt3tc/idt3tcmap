@@ -1,3 +1,10 @@
+# idt3map: these line based files only ever get lines added or removed,
+# so merge them as the union of both sides, to merge (and rebase onto)
+# changes from upstream without conflicts. At the top, as upstream keeps
+# the rules below sorted and adds new ones in between.
+.gitattributes merge=union
+.gitignore merge=union
+
 * -crlf
 *.0 -diff -crlf
 *.1 crlf=input
