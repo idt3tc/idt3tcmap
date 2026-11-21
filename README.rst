@@ -78,23 +78,26 @@ version of the build, ``<q3map2 version>-<commit date>-<commit hash>``.
 The release is uploaded as a draft and only published when complete; it
 fails if the release or tag exists already.
 
-Merging from upstream
----------------------
+Updating from upstream
+----------------------
 
 .. code-block:: sh
 
-   git fetch https://github.com/Garux/netradiant-custom.git master
-   git -c merge.directoryRenames=true merge FETCH_HEAD
+   ./rebase-upstream.sh
+
+fetches the latest upstream revision (into ``upstream/master``) and
+rebases this fork's commits on top of it. As that rewrites the branch,
+publish it with ``git push --force-with-lease`` afterwards.
 
 - Files below ``.legacy/`` were moved there unchanged, so git detects them
   as renames and applies upstream changes to them in their new place
-- ``merge.directoryRenames=true`` makes git put files upstream adds to a
-  directory which was moved as a whole (e.g. ``radiant/``) below
-  ``.legacy/`` as well, instead of stopping with a conflict asking for
-  confirmation
+- ``merge.directoryRenames=true`` (set by the script) makes git put files
+  upstream adds to a directory which was moved as a whole (e.g.
+  ``radiant/``) below ``.legacy/`` as well, instead of stopping with a
+  conflict asking for confirmation
 - New files upstream adds to ``include/`` or ``libs/`` stay where they
-  are. If they aren't needed by q3map2, move them to ``.legacy/`` with
-  ``git mv``
+  are; the script lists them. If they aren't needed by q3map2, move them
+  to ``.legacy/`` with ``git mv``
 - If q3map2 starts to use a header from ``.legacy/``, the build fails;
   move it back with ``git mv .legacy/<path> <path>``
 - The root ``.gitignore`` and ``.gitattributes`` are merged as the union
